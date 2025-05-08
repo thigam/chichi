@@ -1,0 +1,105 @@
+BEGIN;
+
+--
+-- 1. Seat‐type enumeration
+--
+DROP TYPE IF EXISTS public.seat_type;
+CREATE TYPE public.seat_type AS ENUM ('window', 'aisle');
+
+
+--
+-- 2. Users
+--
+CREATE TABLE public.users (
+  user_id     SERIAL PRIMARY KEY,
+  passport    VARCHAR(50) NOT NULL UNIQUE,
+  name        VARCHAR(100) NOT NULL,
+  email       VARCHAR(255) NOT NULL UNIQUE,
+  created_at  TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now()
+);
+
+
+--
+-- 3. Seats
+--
+CREATE TABLE public.seats (
+  flight_id   INT                   NOT NULL
+    REFERENCES public.flights(flight_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE,
+  seat_label  VARCHAR(5)            NOT NULL,     -- e.g. '12A'
+  seat_type   public.seat_type      NOT NULL,
+  price       NUMERIC(10,2)         NOT NULL,     -- will be populated by trigger
+  available   BOOLEAN               NOT NULL DEFAULT TRUE,
+  PRIMARY KEY (flight_id, seat_label),
+  CHECK (price > 0)
+);
+
+
+-- 3a. Trigger to calculate seat price based on flight.price
+CREATE OR REPLACE FUNCTION public.calc_seat_price() RETURNS TRIGGER AS $$
+BEGIN
+  -- if user explicitly set price > 0, leave it; otherwise fetch base price
+  IF NEW.price IS NULL OR NEW.price <= 0 THEN
+    SELECT f.price
+      INTO NEW.price
+      FROM public.flights f
+     WHERE f.flight_id = NEW.flight_id;
+
+    IF NEW.seat_type = 'window' THEN
+      -- apply +3% window-seat surcharge
+      NEW.price := ROUND(NEW.price * 1.03, 2);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_calc_seat_price
+  BEFORE INSERT OR UPDATE ON public.seats
+  FOR EACH ROW
+  EXECUTE FUNCTION public.calc_seat_price();
+
+
+--
+-- 4. Bookings
+--
+CREATE TABLE public.bookings (
+  booking_id   SERIAL PRIMARY KEY,
+  user_id      INT                   NOT NULL
+    REFERENCES public.users(user_id)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT,
+  flight_id    INT                   NOT NULL,
+  seat_label   VARCHAR(5)            NOT NULL,
+  booked_at    TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
+  total_price  NUMERIC(10,2)         NOT NULL,     -- snapshot of seat.price
+  status       VARCHAR(20)           NOT NULL DEFAULT 'confirmed',
+  FOREIGN KEY (flight_id, seat_label)
+    REFERENCES public.seats(flight_id, seat_label)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT
+);
+
+
+-- 4a. Trigger to copy seat.price → booking.total_price
+CREATE OR REPLACE FUNCTION public.set_booking_total_price() RETURNS TRIGGER AS $$
+BEGIN
+  SELECT s.price
+    INTO NEW.total_price
+    FROM public.seats s
+   WHERE s.flight_id  = NEW.flight_id
+     AND s.seat_label = NEW.seat_label;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_set_booking_price
+  BEFORE INSERT ON public.bookings
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_booking_total_price();
+
+
+COMMIT;
