@@ -13,7 +13,8 @@ router.get('/', async (req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error('[/api/airports] error:', err.message);
+    console.error(err.stack);
     res.status(500).json({ error: 'Database error' });
   }
 });
