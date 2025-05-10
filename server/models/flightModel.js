@@ -1,4 +1,4 @@
-const pool = require('../utils/db');
+const pool = require('../db');
 
 const getFlights = async (origin, destination, date) => {
   const query = `
